@@ -11,12 +11,18 @@ use std::{
     fs,
     os::windows::ffi::OsStrExt,
     path::PathBuf,
+    sync::mpsc,
     thread,
     time::Duration,
+};
+use tray_icon::{
+    menu::{Menu, MenuEvent, MenuItem},
+    Icon, TrayIconBuilder,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     SystemParametersInfoW, SPIF_SENDCHANGE, SPIF_UPDATEINIFILE, SPI_SETDESKWALLPAPER,
 };
+use winit::event_loop::{ControlFlow, EventLoop};
 
 const W: u32 = 2560;
 const H: u32 = 1440;
@@ -36,14 +42,33 @@ const KOLORY: [(f32, f32, f32); 11] = [
     (20.0, 105.0, 225.0),  // 1.00 - Głęboki niebieski
 ];
 
-fn interp_color(t: f32) -> (f32, f32, f32) {
-    for i in 0..(PROGI.len() - 1) {
-        let p0 = PROGI[i];
-        let p1 = PROGI[i + 1];
+// Easter Egg: Pattern #387 (maksymalny niebieski + mocny fiolet)
+const PROGI_387: [f32; 11] = [0.0, 0.28, 0.42, 0.46, 0.49, 0.50, 0.51, 0.54, 0.58, 0.72, 1.0];
+const KOLORY_387: [(f32, f32, f32); 11] = [
+    (15.0, 95.0, 235.0),   // 0.00 - Głęboki Blue Gem
+    (30.0, 125.0, 245.0),  // 0.28 - Jasny Blue Gem
+    (128.0, 50.0, 185.0),  // 0.42 - Nasycony fiolet
+    (212.0, 168.0, 78.0),  // 0.46 - Cienka żyłka złota
+    (165.0, 170.0, 178.0), // 0.49 - Cienka żyłka srebra
+    (165.0, 170.0, 178.0), // 0.50 - Minimalny srebrny akcent
+    (165.0, 170.0, 178.0), // 0.51 - Cienka żyłka srebra
+    (212.0, 168.0, 78.0),  // 0.54 - Cienka żyłka złota
+    (128.0, 50.0, 185.0),  // 0.58 - Nasycony fiolet
+    (30.0, 125.0, 245.0),  // 0.72 - Jasny Blue Gem
+    (15.0, 95.0, 235.0),   // 1.00 - Głęboki Blue Gem
+];
+
+fn interp_color(t: f32, is_387: bool) -> (f32, f32, f32) {
+    let progi = if is_387 { &PROGI_387 } else { &PROGI };
+    let kolory = if is_387 { &KOLORY_387 } else { &KOLORY };
+
+    for i in 0..(progi.len() - 1) {
+        let p0 = progi[i];
+        let p1 = progi[i + 1];
         if t >= p0 && t <= p1 {
             let ratio = (t - p0) / (p1 - p0);
-            let (r0, g0, b0) = KOLORY[i];
-            let (r1, g1, b1) = KOLORY[i + 1];
+            let (r0, g0, b0) = kolory[i];
+            let (r1, g1, b1) = kolory[i + 1];
             return (
                 r0 + ratio * (r1 - r0),
                 g0 + ratio * (g1 - g0),
@@ -51,12 +76,41 @@ fn interp_color(t: f32) -> (f32, f32, f32) {
             );
         }
     }
-    KOLORY[0]
+    *kolory.last().unwrap()
+}
+
+/// Generuje w pamięci ikonkę 32x32 z białymi warstwicami jak na mapie topograficznej
+fn create_tray_icon() -> Icon {
+    let size = 32u32;
+    let mut rgba = Vec::with_capacity((size * size * 4) as usize);
+
+    for y in 0..size {
+        for x in 0..size {
+            let fx = x as f32 * 0.14;
+            let fy = y as f32 * 0.14;
+
+            let val = (fx.sin() + fy.cos() + (fx - fy).sin() * 0.6 + 2.6) / 5.2;
+
+            let levels = 5.0;
+            let scaled = val * levels;
+            let dist = (scaled - scaled.round()).abs();
+
+            let alpha = ((0.14 - dist) / 0.08).clamp(0.0, 1.0);
+
+            rgba.push(255);
+            rgba.push(255);
+            rgba.push(255);
+            rgba.push((alpha * 255.0) as u8);
+        }
+    }
+
+    Icon::from_rgba(rgba, size, size).expect("Nie udało się utworzyć ikonki")
 }
 
 fn generate_wallpaper(output_path: &PathBuf) {
     let mut base_rng = rand::thread_rng();
     let seed: u64 = base_rng.gen_range(1..1000);
+    let is_387 = seed == 387;
     let mut rng = StdRng::seed_from_u64(seed);
 
     let two_pi = 2.0 * std::f32::consts::PI;
@@ -71,7 +125,6 @@ fn generate_wallpaper(output_path: &PathBuf) {
     let f9 = rng.gen_range(0.0..two_pi);
     let f10 = rng.gen_range(0.0..two_pi);
 
-    // 1. Obliczamy falę wielowątkowo (wszystkie rdzenie CPU)
     let raw_fala: Vec<f32> = (0..(W * H))
         .into_par_iter()
         .map(|idx| {
@@ -93,7 +146,6 @@ fn generate_wallpaper(output_path: &PathBuf) {
         })
         .collect();
 
-    // Znajdujemy min i max do normalizacji
     let (min_val, max_val) = raw_fala
         .par_iter()
         .fold(
@@ -107,38 +159,42 @@ fn generate_wallpaper(output_path: &PathBuf) {
 
     let span = max_val - min_val;
 
-    // 2. Mapowanie na RGB + szum metalu
     let mut buffer = vec![0u8; (W * H * 3) as usize];
     buffer
         .par_chunks_mut((W * 3) as usize)
         .enumerate()
         .for_each(|(y, row)| {
             let mut row_rng = StdRng::seed_from_u64(seed.wrapping_add(y as u64 * 7919));
-            for x in 0..(W as usize) {
+            for (x, pixel) in row.chunks_exact_mut(3).enumerate() {
                 let val = raw_fala[y * (W as usize) + x];
                 let t = ((val - min_val) / span).clamp(0.0, 1.0);
-                let (r, g, b) = interp_color(t);
+                let (r, g, b) = interp_color(t, is_387);
 
-                // Przybliżenie rozkładu normalnego dla faktury metalu
                 let u_sum: f32 = (0..6).map(|_| row_rng.gen::<f32>()).sum::<f32>() - 3.0;
                 let grain = u_sum * 5.5;
 
-                row[x * 3] = (r + grain).clamp(0.0, 255.0) as u8;
-                row[x * 3 + 1] = (g + grain).clamp(0.0, 255.0) as u8;
-                row[x * 3 + 2] = (b + grain).clamp(0.0, 255.0) as u8;
+                let rgb_bytes = [
+                    (r + grain).clamp(0.0, 255.0) as u8,
+                    (g + grain).clamp(0.0, 255.0) as u8,
+                    (b + grain).clamp(0.0, 255.0) as u8,
+                ];
+                pixel.copy_from_slice(&rgb_bytes);
             }
         });
 
     let mut img = RgbImage::from_raw(W, H, buffer).expect("Błąd bufora obrazu");
 
-    // 3. Dodajemy napis w prawym GÓRNYM rogu korzystając z systemowej czcionki Arial
+    // Napis w prawym górnym rogu
     if let Ok(font_data) = fs::read("C:\\Windows\\Fonts\\arial.ttf") {
         if let Ok(font) = FontRef::try_from_slice(&font_data) {
-            let tekst = format!("randomly generated, pattern index: {}", seed);
+            let tekst = if is_387 {
+                format!("pattern index: {} [BLUE GEM]", seed)
+            } else {
+                format!("pattern index: {}", seed)
+            };
             let scale = PxScale::from(24.0);
             let (tw, _th) = text_size(scale, &font, &tekst);
 
-            // Prawy górny róg (24 px marginesu od prawej i 24 px od góry)
             let pos_x = (W - 24).saturating_sub(tw) as i32;
             let pos_y = 24;
 
@@ -147,7 +203,6 @@ fn generate_wallpaper(output_path: &PathBuf) {
         }
     }
 
-    // 4. Zapisujemy plik i ustawiamy jako tapetę Windows
     if img.save(output_path).is_ok() {
         set_windows_wallpaper(output_path);
     }
@@ -170,7 +225,6 @@ fn set_windows_wallpaper(path: &PathBuf) {
 }
 
 fn main() {
-    // Zapisujemy tapetę obok pliku .exe
     let mut output_path = env::current_exe()
         .unwrap_or_else(|_| PathBuf::from("."))
         .parent()
@@ -178,9 +232,42 @@ fn main() {
         .to_path_buf();
     output_path.push("case_hardened.png");
 
-    loop {
+    let (tx, rx) = mpsc::channel::<()>();
+
+    thread::spawn(move || loop {
         generate_wallpaper(&output_path);
-        // Czekamy 15 minut (900 sekund)
-        thread::sleep(Duration::from_secs(15 * 60));
-    }
+        let _ = rx.recv_timeout(Duration::from_secs(15 * 60));
+    });
+
+    let tray_menu = Menu::new();
+    let item_next = MenuItem::new("Losuj nowy pattern teraz", true, None);
+    let item_quit = MenuItem::new("Zamknij", true, None);
+    tray_menu.append(&item_next).unwrap();
+    tray_menu.append(&item_quit).unwrap();
+
+    let _tray_icon = TrayIconBuilder::new()
+        .with_menu(Box::new(tray_menu))
+        .with_tooltip("Case Hardened OLED Wallpaper")
+        .with_icon(create_tray_icon())
+        .build()
+        .unwrap();
+
+    let event_loop = EventLoop::new().unwrap();
+    event_loop.set_control_flow(ControlFlow::Wait);
+
+    let next_id = item_next.id().clone();
+    let quit_id = item_quit.id().clone();
+
+    #[allow(deprecated)]
+    event_loop
+        .run(move |_event, elwt| {
+            while let Ok(menu_event) = MenuEvent::receiver().try_recv() {
+                if menu_event.id == next_id {
+                    let _ = tx.send(());
+                } else if menu_event.id == quit_id {
+                    elwt.exit();
+                }
+            }
+        })
+        .unwrap();
 }
