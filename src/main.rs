@@ -43,20 +43,20 @@ const KOLORY: [(f32, f32, f32); 11] = [
     (20.0, 105.0, 225.0),
 ];
 
-// Easter Egg: Pattern #387 (Blue Gem)
-const PROGI_387: [f32; 11] = [0.0, 0.28, 0.42, 0.46, 0.49, 0.50, 0.51, 0.54, 0.58, 0.72, 1.0];
+// Easter Egg: Pattern #387 (Czysty, jednolity jasny błękit w całym środku + subtelne akcenty srebra, złota i fioletu)
+const PROGI_387: [f32; 11] = [0.0, 0.03, 0.08, 0.16, 0.36, 0.52, 0.70, 0.84, 0.90, 0.96, 1.0];
 const KOLORY_387: [(f32, f32, f32); 11] = [
-    (15.0, 95.0, 235.0),
-    (30.0, 125.0, 245.0),
-    (128.0, 50.0, 185.0),
-    (212.0, 168.0, 78.0),
-    (165.0, 170.0, 178.0),
-    (165.0, 170.0, 178.0),
-    (165.0, 170.0, 178.0),
-    (212.0, 168.0, 78.0),
-    (128.0, 50.0, 185.0),
-    (30.0, 125.0, 245.0),
-    (15.0, 95.0, 235.0),
+    (165.0, 170.0, 178.0), // 0.00 - Śladowy srebrny rdzeń
+    (212.0, 168.0, 78.0),  // 0.03 - Cienka obwódka złota
+    (138.0, 62.0, 198.0),  // 0.08 - Cienkie przejście fioletu
+    (48.0, 148.0, 250.0),  // 0.16 - Jasny błękit (jednolita baza)
+    (48.0, 148.0, 250.0),  // 0.36 - Jasny błękit (zero ciemnych linii)
+    (52.0, 154.0, 252.0),  // 0.52 - Jasny błękit (delikatne rozjaśnienie środka)
+    (48.0, 148.0, 250.0),  // 0.70 - Jasny błękit (zero ciemnych linii)
+    (48.0, 148.0, 250.0),  // 0.84 - Jasny błękit (jednolita baza)
+    (138.0, 62.0, 198.0),  // 0.90 - Delikatna fioletowa smuga
+    (125.0, 45.0, 185.0),  // 0.96 - Fioletowy szczyt
+    (118.0, 38.0, 178.0),  // 1.00 - Najwyższy punkt fioletu
 ];
 
 fn interp_color(t: f32, is_387: bool) -> (f32, f32, f32) {
@@ -80,7 +80,6 @@ fn interp_color(t: f32, is_387: bool) -> (f32, f32, f32) {
     *kolory.last().unwrap()
 }
 
-/// Generuje topograficzną ikonkę 64x64 do zasobnika ORAZ zapisuje ją jako icon.ico dla Windows Toast
 fn prepare_icons(ico_path: &Path) -> Icon {
     let size = 64u32;
     let mut rgba = Vec::with_capacity((size * size * 4) as usize);
@@ -112,7 +111,6 @@ fn prepare_icons(ico_path: &Path) -> Icon {
     Icon::from_rgba(rgba, size, size).expect("Nie udało się utworzyć ikonki")
 }
 
-/// Wyświetla powiadomienie systemowe Windows Toast przy wylosowaniu #387
 fn show_blue_gem_toast(ico_path: &Path) {
     let mut toast = Toast::new(Toast::POWERSHELL_APP_ID)
         .title("Blue Gem #387")
