@@ -131,15 +131,16 @@ fn generate_wallpaper(output_path: &PathBuf) {
 
     let mut img = RgbImage::from_raw(W, H, buffer).expect("Błąd bufora obrazu");
 
-    // 3. Dodajemy napis w prawym dolnym rogu korzystając z systemowej czcionki Arial
+    // 3. Dodajemy napis w prawym GÓRNYM rogu korzystając z systemowej czcionki Arial
     if let Ok(font_data) = fs::read("C:\\Windows\\Fonts\\arial.ttf") {
         if let Ok(font) = FontRef::try_from_slice(&font_data) {
-            let tekst = format!("randomly generated, seed: {}", seed);
+            let tekst = format!("randomly generated, pattern index: {}", seed);
             let scale = PxScale::from(24.0);
-            let (tw, th) = text_size(scale, &font, &tekst);
+            let (tw, _th) = text_size(scale, &font, &tekst);
 
+            // Prawy górny róg (24 px marginesu od prawej i 24 px od góry)
             let pos_x = (W - 24).saturating_sub(tw) as i32;
-            let pos_y = (H - 24).saturating_sub(th) as i32;
+            let pos_y = 24;
 
             let czarny = Rgb::from([0u8, 0u8, 0u8]);
             draw_text_mut(&mut img, czarny, pos_x, pos_y, scale, &font, &tekst);
