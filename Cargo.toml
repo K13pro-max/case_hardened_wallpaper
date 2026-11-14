@@ -1,0 +1,15 @@
+[package]
+name = "case_hardened_wallpaper"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+image = "0.25"
+imageproc = "0.25"
+ab_glyph = "0.2"
+rand = "0.8"
+rayon = "1.10"
+windows-sys = { version = "0.59", features = [
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Foundation"
+] }
