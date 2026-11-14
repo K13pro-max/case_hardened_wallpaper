@@ -1,7 +1,7 @@
 #![windows_subsystem = "windows"]
 
 use ab_glyph::{FontRef, PxScale};
-use image::{Rgb, RgbImage};
+use image::{Rgb, RgbImage, RgbaImage};
 use imageproc::drawing::{draw_text_mut, text_size};
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use rayon::prelude::*;
@@ -10,7 +10,7 @@ use std::{
     ffi::OsStr,
     fs,
     os::windows::ffi::OsStrExt,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::mpsc,
     thread,
     time::Duration,
@@ -23,39 +23,40 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SystemParametersInfoW, SPIF_SENDCHANGE, SPIF_UPDATEINIFILE, SPI_SETDESKWALLPAPER,
 };
 use winit::event_loop::{ControlFlow, EventLoop};
+use winrt_notification::{Duration as ToastDuration, IconCrop, Sound, Toast};
 
 const W: u32 = 2560;
 const H: u32 = 1440;
 
 const PROGI: [f32; 11] = [0.0, 0.10, 0.22, 0.30, 0.38, 0.50, 0.62, 0.70, 0.78, 0.90, 1.0];
 const KOLORY: [(f32, f32, f32); 11] = [
-    (20.0, 105.0, 225.0),  // 0.00 - Głęboki niebieski
-    (35.0, 125.0, 235.0),  // 0.10 - Rozszerzony niebieski
-    (138.0, 65.0, 168.0),  // 0.22 - Szeroki fioletowy
-    (212.0, 168.0, 78.0),  // 0.30 - Złoty
-    (185.0, 136.0, 64.0),  // 0.38 - Ciepłe złoto
-    (165.0, 170.0, 178.0), // 0.50 - Czysty srebrny
-    (185.0, 136.0, 64.0),  // 0.62 - Ciepłe złoto
-    (212.0, 168.0, 78.0),  // 0.70 - Złoty
-    (138.0, 65.0, 168.0),  // 0.78 - Szeroki fioletowy
-    (35.0, 125.0, 235.0),  // 0.90 - Rozszerzony niebieski
-    (20.0, 105.0, 225.0),  // 1.00 - Głęboki niebieski
+    (20.0, 105.0, 225.0),
+    (35.0, 125.0, 235.0),
+    (138.0, 65.0, 168.0),
+    (212.0, 168.0, 78.0),
+    (185.0, 136.0, 64.0),
+    (165.0, 170.0, 178.0),
+    (185.0, 136.0, 64.0),
+    (212.0, 168.0, 78.0),
+    (138.0, 65.0, 168.0),
+    (35.0, 125.0, 235.0),
+    (20.0, 105.0, 225.0),
 ];
 
-// Easter Egg: Pattern #387 (maksymalny niebieski + mocny fiolet)
+// Easter Egg: Pattern #387 (Blue Gem)
 const PROGI_387: [f32; 11] = [0.0, 0.28, 0.42, 0.46, 0.49, 0.50, 0.51, 0.54, 0.58, 0.72, 1.0];
 const KOLORY_387: [(f32, f32, f32); 11] = [
-    (15.0, 95.0, 235.0),   // 0.00 - Głęboki Blue Gem
-    (30.0, 125.0, 245.0),  // 0.28 - Jasny Blue Gem
-    (128.0, 50.0, 185.0),  // 0.42 - Nasycony fiolet
-    (212.0, 168.0, 78.0),  // 0.46 - Cienka żyłka złota
-    (165.0, 170.0, 178.0), // 0.49 - Cienka żyłka srebra
-    (165.0, 170.0, 178.0), // 0.50 - Minimalny srebrny akcent
-    (165.0, 170.0, 178.0), // 0.51 - Cienka żyłka srebra
-    (212.0, 168.0, 78.0),  // 0.54 - Cienka żyłka złota
-    (128.0, 50.0, 185.0),  // 0.58 - Nasycony fiolet
-    (30.0, 125.0, 245.0),  // 0.72 - Jasny Blue Gem
-    (15.0, 95.0, 235.0),   // 1.00 - Głęboki Blue Gem
+    (15.0, 95.0, 235.0),
+    (30.0, 125.0, 245.0),
+    (128.0, 50.0, 185.0),
+    (212.0, 168.0, 78.0),
+    (165.0, 170.0, 178.0),
+    (165.0, 170.0, 178.0),
+    (165.0, 170.0, 178.0),
+    (212.0, 168.0, 78.0),
+    (128.0, 50.0, 185.0),
+    (30.0, 125.0, 245.0),
+    (15.0, 95.0, 235.0),
 ];
 
 fn interp_color(t: f32, is_387: bool) -> (f32, f32, f32) {
@@ -79,15 +80,15 @@ fn interp_color(t: f32, is_387: bool) -> (f32, f32, f32) {
     *kolory.last().unwrap()
 }
 
-/// Generuje w pamięci ikonkę 32x32 z białymi warstwicami jak na mapie topograficznej
-fn create_tray_icon() -> Icon {
-    let size = 32u32;
+/// Generuje topograficzną ikonkę 64x64 do zasobnika ORAZ zapisuje ją jako icon.ico dla Windows Toast
+fn prepare_icons(ico_path: &Path) -> Icon {
+    let size = 64u32;
     let mut rgba = Vec::with_capacity((size * size * 4) as usize);
 
     for y in 0..size {
         for x in 0..size {
-            let fx = x as f32 * 0.14;
-            let fy = y as f32 * 0.14;
+            let fx = x as f32 * 0.07;
+            let fy = y as f32 * 0.07;
 
             let val = (fx.sin() + fy.cos() + (fx - fy).sin() * 0.6 + 2.6) / 5.2;
 
@@ -104,10 +105,29 @@ fn create_tray_icon() -> Icon {
         }
     }
 
+    if let Some(img_buf) = RgbaImage::from_raw(size, size, rgba.clone()) {
+        let _ = img_buf.save(ico_path);
+    }
+
     Icon::from_rgba(rgba, size, size).expect("Nie udało się utworzyć ikonki")
 }
 
-fn generate_wallpaper(output_path: &PathBuf) {
+/// Wyświetla powiadomienie systemowe Windows Toast przy wylosowaniu #387
+fn show_blue_gem_toast(ico_path: &Path) {
+    let mut toast = Toast::new(Toast::POWERSHELL_APP_ID)
+        .title("Blue Gem #387")
+        .text1("Wylosowano legendarny pattern Case Hardened #387! Sprawdź pulpit.")
+        .sound(Some(Sound::Reminder))
+        .duration(ToastDuration::Long);
+
+    if ico_path.exists() {
+        toast = toast.icon(ico_path, IconCrop::Square, "Blue Gem #387");
+    }
+
+    let _ = toast.show();
+}
+
+fn generate_wallpaper(output_path: &Path, ico_path: &Path) {
     let mut base_rng = rand::thread_rng();
     let seed: u64 = base_rng.gen_range(1..1000);
     let is_387 = seed == 387;
@@ -184,7 +204,6 @@ fn generate_wallpaper(output_path: &PathBuf) {
 
     let mut img = RgbImage::from_raw(W, H, buffer).expect("Błąd bufora obrazu");
 
-    // Napis w prawym górnym rogu
     if let Ok(font_data) = fs::read("C:\\Windows\\Fonts\\arial.ttf") {
         if let Ok(font) = FontRef::try_from_slice(&font_data) {
             let tekst = if is_387 {
@@ -205,10 +224,13 @@ fn generate_wallpaper(output_path: &PathBuf) {
 
     if img.save(output_path).is_ok() {
         set_windows_wallpaper(output_path);
+        if is_387 {
+            show_blue_gem_toast(ico_path);
+        }
     }
 }
 
-fn set_windows_wallpaper(path: &PathBuf) {
+fn set_windows_wallpaper(path: &Path) {
     let wide_path: Vec<u16> = OsStr::new(path)
         .encode_wide()
         .chain(std::iter::once(0))
@@ -225,17 +247,21 @@ fn set_windows_wallpaper(path: &PathBuf) {
 }
 
 fn main() {
-    let mut output_path = env::current_exe()
+    let base_dir = env::current_exe()
         .unwrap_or_else(|_| PathBuf::from("."))
         .parent()
-        .unwrap_or_else(|| std::path::Path::new("."))
+        .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
-    output_path.push("case_hardened.png");
+
+    let output_path = base_dir.join("case_hardened.png");
+    let ico_path = base_dir.join("icon.ico");
+
+    let tray_icon_img = prepare_icons(&ico_path);
 
     let (tx, rx) = mpsc::channel::<()>();
 
     thread::spawn(move || loop {
-        generate_wallpaper(&output_path);
+        generate_wallpaper(&output_path, &ico_path);
         let _ = rx.recv_timeout(Duration::from_secs(15 * 60));
     });
 
@@ -248,7 +274,7 @@ fn main() {
     let _tray_icon = TrayIconBuilder::new()
         .with_menu(Box::new(tray_menu))
         .with_tooltip("Case Hardened OLED Wallpaper")
-        .with_icon(create_tray_icon())
+        .with_icon(tray_icon_img)
         .build()
         .unwrap();
 
